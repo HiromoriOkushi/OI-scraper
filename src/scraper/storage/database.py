@@ -133,35 +133,23 @@ class InsiderTradeDatabase:
         return validated_trades
 
     def insert_trades(self, trades: List[Union[RawTradeData, InsiderTradePydanticModel]]) -> int:
-        """
-        Inserts trades with bulk operations and deduplication (ON CONFLICT DO NOTHING).
-        Returns the count of newly inserted (or affected) records.
-        """
         if not trades:
             return 0
 
-        # If trades are already Pydantic models, convert them to dicts for DB insertion
-        # Otherwise, they are RawTradeData (dicts) and will be validated
-        
         prepared_data_for_db: List[Dict[str, Any]] = []
         for trade_input in trades:
             if isinstance(trade_input, InsiderTradePydanticModel):
-                # Convert Pydantic model to dict, ensuring dates are strings
-                trade_dict = trade_input.model_dump(mode='json') # mode='json' helps with dates/enums
-                # Pydantic v1: trade_dict = trade_input.dict()
-                # Ensure date objects are converted to ISO strings if not handled by model_dump
+                trade_dict = trade_input.model_dump(mode='json')
                 if isinstance(trade_dict.get('filing_date'), date):
                      trade_dict['filing_date'] = trade_dict['filing_date'].isoformat()
                 if isinstance(trade_dict.get('trade_date'), date):
                      trade_dict['trade_date'] = trade_dict['trade_date'].isoformat()
                 prepared_data_for_db.append(trade_dict)
             elif isinstance(trade_input, dict):
-                # Validate and prepare raw dicts (this path might be less common if pipeline produces Pydantic models)
                 try:
-                    # This will convert dates to strings if they are date objects in the dict
-                    validated_model = self._validate_and_prepare_trades([trade_input])
-                    if validated_model:
-                        prepared_data_for_db.append(validated_model[0].model_dump(mode='json'))
+                    validated_model_list = self._validate_and_prepare_trades([trade_input])
+                    if validated_model_list:
+                        prepared_data_for_db.append(validated_model_list[0].model_dump(mode='json'))
                 except (DataValidationError, ValidationError) as e:
                      logger.warning(f"Skipping invalid trade data during insert prep: {trade_input}, Error: {e}")
             else:
@@ -173,115 +161,51 @@ class InsiderTradeDatabase:
             return 0
 
         conn = self._get_connection()
-        inserted_count = 0
+        
         try:
-            with conn: # Transaction handling
+            with conn: # Transaction ensures atomicity for all batches
                 cursor = conn.cursor()
                 
-                # We need to build the query based on the keys of the first item,
-                # assuming all items have the same structure (Pydantic models ensure this).
-                if not prepared_data_for_db: return 0
-                
                 first_trade_dict = prepared_data_for_db[0]
-                query, _ = SQLQueryBuilder.build_insert_on_conflict_do_nothing(
-                    "insider_trades",
-                    first_trade_dict # Used to determine column names
-                )
-                # The values part of the query needs to match the order of columns in the first_trade_dict
-                # when preparing `data_tuples`.
+                columns_list = list(first_trade_dict.keys())
+                cols_str = ", ".join(columns_list)
+                vals_placeholder_str = ", ".join(["?"] * len(columns_list))
                 
-                # Prepare list of tuples for executemany
-                # Ensure all dicts have the same keys in the same order as `first_trade_dict.keys()`
-                ordered_keys = list(first_trade_dict.keys())
+                # Using INSERT OR IGNORE for simpler "new rows" counting via total_changes
+                sql_query_to_execute = f"INSERT OR IGNORE INTO insider_trades ({cols_str}) VALUES ({vals_placeholder_str})"
+                logger.debug(f"Executing batch insert with query: {sql_query_to_execute}")
+
                 data_tuples = [
-                    tuple(item.get(key) for key in ordered_keys) for item in prepared_data_for_db
+                    tuple(item.get(key) for key in columns_list) for item in prepared_data_for_db
                 ]
 
                 batch_size = self.db_config.get("batch_size", 100)
-                for i in range(0, len(data_tuples), batch_size):
-                    batch = data_tuples[i:i + batch_size]
-                    cursor.executemany(query, batch)
-                    # For "ON CONFLICT DO NOTHING", cursor.rowcount reflects rows that were actually inserted or changed.
-                    # If a row was ignored due to conflict, it's not counted.
-                    # SQLite's `sqlite3_changes()` C function returns the number of rows modified, inserted or deleted by the most recently completed INSERT, UPDATE or DELETE statement.
-                    # cursor.rowcount might be -1 or the number of rows in the batch depending on Python's DB-API driver version for SQLite.
-                    # To get an accurate count of *newly* inserted rows:
-                    # One way is to query count before and after, or use `SELECT changes()` but that needs separate exec.
-                    # A simpler approach for `ON CONFLICT DO NOTHING` is to assume `cursor.rowcount` (if > -1) is the number of successful operations.
-                    # Let's query for changes explicitly to be sure.
-                    
-                    # This gets changes from the LAST statement (the executemany).
-                    # It's more reliable to sum this up.
-                    # Note: For `executemany`, `rowcount` is often -1.
-                    # To get the true number of inserted rows with ON CONFLICT DO NOTHING, it's tricky without another query.
-                    # A common pattern is to select count before and after, or use a different upsert strategy
-                    # that allows counting. With "DO NOTHING", it's hard to get count of *new* rows from rowcount.
-                    # `conn.total_changes` accumulates changes over the connection's lifetime.
-                    # Let's assume for now that we want to report the number of *attempted* inserts in batch that didn't fail.
-                    # Or, we can use a workaround:
-                    # For "INSERT OR IGNORE" (synonym for ON CONFLICT DO NOTHING in some contexts), cursor.rowcount gives number of rows *inserted*.
-                    # For "INSERT ... ON CONFLICT ... DO NOTHING", cursor.rowcount behavior is less consistent across drivers/versions.
-                    
-                    # A more robust way if you need the exact count of *newly inserted* rows:
-                    # Iterate and insert one by one, checking rowcount, but this loses batch performance.
-                    # Or, if hash_ids are available, select existing hash_ids first, then insert only new ones.
-                    
-                    # For this implementation, we'll rely on total changes within the transaction if possible,
-                    # or just report that the batch was processed.
-                    # cursor.execute("SELECT changes()")
-                    # inserted_in_batch = cursor.fetchone()[0]
-                    # inserted_count += inserted_in_batch
-                    # logger.debug(f"Batch insert: {inserted_in_batch} new rows added in this batch.")
-
-                # A simpler way: if the insert affects rows, it means they were new.
-                # After all batches, conn.commit() happens due to `with conn:`.
-                # The `total_changes` before and after the entire operation can give a clue.
-                # For now, let's count based on `cursor.rowcount` if it's helpful, or just confirm execution.
-                # `cursor.rowcount` for `executemany` with `ON CONFLICT DO NOTHING` is often not reliable for *new* rows.
-                # We will return the number of trades *attempted* to insert that were valid.
-                # To get actual inserted, would need to select counts or use INSERT OR IGNORE.
                 
-                # Let's try to get the actual number of changes from the connection.
-                # This will be the total for all `executemany` calls in this transaction.
-                # This is a bit of a hack as it depends on when SQLite updates this value.
-                # A robust way is to use `SELECT changes()` after each `executemany`.
-                # For simplicity, we'll count based on how many items were in the `prepared_data_for_db`
-                # and log the success. The "new records" count is tricky here without more queries.
-                
-                # The prompt asked for "Return count of new records".
-                # With ON CONFLICT DO NOTHING, the most straightforward is to assume all successful operations
-                # in the batch were new, unless the DB itself reports otherwise effectively.
-                # The `sqlite3` module's `cursor.rowcount` for `executemany` of `INSERT ... ON CONFLICT ... DO NOTHING`
-                # is typically -1 or the number of parameter sets. It does NOT directly give new rows.
-                # To get this, one might select hash_ids before inserting.
-                # For now, we'll report that the operation was submitted.
-                # A better insert query for counting new rows is "INSERT OR IGNORE".
-                # Let's switch to that for `insider_trades` as it's simpler for counting.
-
-                # Rebuild query for INSERT OR IGNORE:
-                columns_list = list(prepared_data_for_db[0].keys())
-                cols_str = ", ".join(columns_list)
-                vals_placeholder_str = ", ".join(["?"] * len(columns_list))
-                insert_or_ignore_query = f"INSERT OR IGNORE INTO insider_trades ({cols_str}) VALUES ({vals_placeholder_str})"
-                
-                current_total_changes = conn.total_changes
+                # Get total changes on the connection BEFORE this batch operation begins
+                # Note: total_changes is for the lifetime of the connection. 
+                # For changes within this specific transaction, this is the best we can do with Python's sqlite3 API
+                # without querying "SELECT changes()" after each batch.
+                initial_total_changes = conn.total_changes 
                 
                 for i in range(0, len(data_tuples), batch_size):
                     batch = data_tuples[i:i + batch_size]
-                    cursor.executemany(insert_or_ignore_query, batch)
-                    # `cursor.rowcount` with `INSERT OR IGNORE` should give the number of rows actually inserted in the last operation.
-                    # However, for `executemany`, it's often still -1 or total statements.
-                    # The `conn.total_changes` is more reliable for the cumulative effect within a transaction.
+                    cursor.executemany(sql_query_to_execute, batch)
                 
-                inserted_count = conn.total_changes - current_total_changes
+                # Calculate newly inserted rows by the difference in total_changes for the connection
+                # This works because the 'with conn:' block ensures all executemany calls are part of one transaction.
+                newly_inserted_this_call = conn.total_changes - initial_total_changes
 
-            logger.info(f"Successfully processed {len(prepared_data_for_db)} trades for DB insertion. Newly inserted: {inserted_count}.")
-            return inserted_count
+            logger.info(
+                f"Successfully processed {len(prepared_data_for_db)} trades for DB insertion. "
+                f"Newly inserted this call: {newly_inserted_this_call}."
+            )
+            return newly_inserted_this_call
+            
         except sqlite3.Error as e:
             logger.error(f"Database error during batch insert: {e}")
             raise DatabaseError(f"Batch insert failed: {e}") from e
         except Exception as e:
-            logger.error(f"Unexpected error during insert_trades: {e}")
+            logger.error(f"Unexpected error during insert_trades: {e}", exc_info=True)
             raise DatabaseError(f"Unexpected error in insert_trades: {e}") from e
 
 

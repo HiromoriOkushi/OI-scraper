@@ -18,15 +18,66 @@ class InsiderTradeParser(GenericTableParser):
     Parses HTML content from OpenInsider.com into structured trade data.
     Inherits from GenericTableParser and customizes row processing.
     """
-
     def __init__(self, base_url: str):
-        # Use the default table identifier for OpenInsider
+        # For GenericTableParser, give a default that might work, but we'll override _find_table
         super().__init__(
-            table_identifier={"id": INSIDER_TABLE_ID},
-            column_map=EXPECTED_COLUMN_HEADERS, # Use the predefined column map
-            row_processor=self.extract_trade_details # Custom row processor
+            table_identifier={"id": "insidertrades"}, # Fallback if needed by other methods
+            column_map=EXPECTED_COLUMN_HEADERS,
+            row_processor=self.extract_trade_details
         )
         self.base_url = base_url.strip('/')
+
+    # OVERRIDE _find_table specifically for OpenInsider
+    def _find_table(self, soup: BeautifulSoup) -> Optional[Tag]:
+        """Finds the main data table on OpenInsider.com."""
+        
+        # Strategy 1: Try to find by id="insidertrades" AND class="tinytable"
+        logger.info("Attempting to find table with id='insidertrades' AND class='tinytable'")
+        table = soup.find("table", {"id": "insidertrades", "class": "tinytable"})
+        if table:
+            logger.info(f"Successfully found table using id='insidertrades' and class='tinytable'.")
+            return table
+
+        # Strategy 2: Try to find by just id="insidertrades" (if class was missing)
+        logger.warning("Table with id+class not found. Trying by id='insidertrades' only.")
+        table = soup.find("table", id="insidertrades")
+        if table:
+            logger.info(f"Successfully found table using id='insidertrades' only.")
+            return table
+
+        # Strategy 3: Try to find by just class="tinytable"
+        logger.warning("Table with id='insidertrades' not found. Trying by class='tinytable' only.")
+        # The actual data table is the second "tinytable" on the page in the HTML you provided.
+        # The first one is a small legend table at the bottom.
+        # Let's find all 'tinytable' and pick the one that looks like the data table.
+        potential_tables = soup.find_all("table", class_="tinytable")
+        if potential_tables:
+            logger.info(f"Found {len(potential_tables)} table(s) with class='tinytable'.")
+            for pt_table in potential_tables:
+                # The main data table has a <thead> with specific-looking <th> elements
+                thead = pt_table.find("thead")
+                if thead:
+                    header_th_elements = thead.find_all("th")
+                    # Normalize header text: lowercase, strip, replace non-breaking space
+                    header_texts = [
+                        th.get_text(strip=True).lower().replace('\xa0', ' ') 
+                        for th in header_th_elements
+                    ]
+                    expected_keys_subset = {"filing date", "ticker", "insider name", "trade type"} # Already lowercase
+                    found_keys = {h_text for h_text in header_texts if h_text in expected_keys_subset}
+                    
+                    if len(found_keys) >= 3: # Or a higher threshold like 4 for more confidence
+                        logger.info(f"InsiderTradeParser: Selected a 'tinytable' with expected data headers: {', '.join(sorted(list(found_keys)))}.")
+                        return pt_table
+            if potential_tables: # If no perfect match, but some tinytables exist
+                 logger.warning("Could not identify data table among 'tinytable's by headers. Taking first 'tinytable' as last resort for this class strategy (might be wrong).")
+                 return potential_tables[0] # This is still a bit risky
+
+        logger.error(
+            "CRITICAL: Could not find the target data table using known OpenInsider patterns. "
+            "The page structure might have changed significantly."
+        )
+        return None # Safest: return None if no suitable table is found
 
     def parse_trade_table(self, html: str, source_name: str) -> ParsedTrades:
         """

@@ -2,7 +2,7 @@
 import logging
 from typing import List, Dict, Any, Optional, Callable
 from bs4 import BeautifulSoup, Tag
-
+import re
 from .base_parser import BaseParser
 from ..exceptions import ParsingError
 from ..constants import INSIDER_TABLE_ID, EXPECTED_COLUMN_HEADERS
@@ -42,29 +42,67 @@ class GenericTableParser(BaseParser):
         self.column_map = column_map if column_map else EXPECTED_COLUMN_HEADERS
         self.row_processor = row_processor if row_processor else self._default_row_processor
 
-    def _find_table(selfself, soup: BeautifulSoup) -> Optional[Tag]:
+    def _find_table(self, soup: BeautifulSoup) -> Optional[Tag]:
         """Finds the table element in the parsed HTML."""
-        table = soup.find("table", self.table_identifier)
-        if not table:
-            logger.warning(f"Table with identifier {self.table_identifier} not found.")
-            # Fallback: try to find the first large table if specific ID fails
-            all_tables = soup.find_all("table")
-            if not all_tables:
-                logger.error("No tables found in HTML content.")
-                return None
+        
+        # Primary strategy: Use the provided table_identifier
+        # For OpenInsider, self.table_identifier will be {'id': 'insidertrades'}
+        if isinstance(self.table_identifier, dict) and 'id' in self.table_identifier:
+            target_id = self.table_identifier['id']
+            logger.info(f"Attempting to find primary table by id='{target_id}'")
+            # Using find with class attribute as well for more specificity if needed
+            # For openinsider, it's <table class="tinytable" id="insidertrades">
+            # We can try finding by ID first, then by ID and class.
             
-            # Heuristic: pick the table with the most rows or a significant number of rows
-            # This is a guess and might not always be correct.
-            # For OpenInsider, the main table usually has id="insidertrades"
-            logger.info("Attempting to find table by common ID 'insidertrades' as a fallback.")
-            table = soup.find("table", id="insidertrades")
+            table = soup.find("table", id=target_id)
             if table:
-                logger.info("Found table by fallback ID 'insidertrades'.")
+                logger.info(f"Successfully found table using id='{target_id}'. Attributes: {table.attrs}")
+                # Optional: verify class if you want to be super sure
+                # if "tinytable" in table.get("class", []):
+                #    logger.info("Table also has expected class 'tinytable'.")
+                #    return table
+                # else:
+                #    logger.warning(f"Table found with id='{target_id}' but missing class 'tinytable'. Proceeding anyway.")
+                #    return table 
+                return table # Return if found by ID
+
+            # If just ID failed, try ID and class for OpenInsider's specific case
+            logger.warning(f"Table with id='{target_id}' not found directly. Trying with id AND class 'tinytable'.")
+            table = soup.find("table", {"id": target_id, "class": "tinytable"})
+            if table:
+                logger.info(f"Successfully found table using id='{target_id}' and class='tinytable'. Attributes: {table.attrs}")
+                return table
+        
+        # Fallback if self.table_identifier was more generic or above failed
+        if not table and isinstance(self.table_identifier, dict):
+            logger.info(f"Attempting to find table with general attributes: {self.table_identifier}")
+            table = soup.find("table", self.table_identifier)
+            if table:
+                logger.info(f"Successfully found table using general attributes. Attributes: {table.attrs}")
                 return table
 
-            logger.warning("Fallback table selection: Picking the first table found. This may be incorrect.")
-            return all_tables[0] # Risky fallback
-        return table
+        # If all specific searches failed, then log a clear warning and resort to previous fallback (or error out)
+        logger.error(
+            f"CRITICAL: Could not find the target table using identifier '{self.table_identifier}'. "
+            "The page structure might have changed significantly or the identifier is incorrect."
+        )
+        
+        # Option 1: Return None and let the calling code handle no table found (safer)
+        # logger.error("No target table found. Returning None.")
+        # return None
+
+        # Option 2: The previous risky fallback (for debugging what it picks)
+        all_tables = soup.find_all("table")
+        if not all_tables:
+            logger.error("No tables at all found in HTML content.")
+            return None
+        
+        logger.warning(
+            f"VERY RISKY FALLBACK: No specific table found. Picking the first table on the page out of {len(all_tables)}. "
+            f"This table's attributes: {all_tables[0].attrs if all_tables else 'N/A'}. "
+            "This is highly likely to be incorrect and will lead to parsing errors."
+        )
+        return all_tables[0]
 
     def _extract_headers(self, table_element: Tag) -> List[str]:
         """Extracts header texts from the table."""
@@ -103,31 +141,75 @@ class GenericTableParser(BaseParser):
         logger.debug(f"Extracted headers: {headers}")
         return headers
     
-    def _map_headers(self, extracted_headers: List[str]) -> Dict[str,str]:
-        """Maps extracted headers to standardized field names using self.column_map."""
+    def _map_headers(self, extracted_headers: List[str]) -> Dict[str, str]:
+        """
+        Maps extracted headers to standardized field names using self.column_map.
+        Handles non-breaking spaces and consolidates whitespace in extracted headers.
+        """
         mapped_headers = {}
-        normalized_column_map = {k.lower().strip(): v for k, v in self.column_map.items()}
+        normalized_column_map_from_constants = {
+            key.lower().strip().replace('\xa0', ' '): value # Also clean constant keys thoroughly
+            for key, value in self.column_map.items()
+        }
+        # Further clean constant keys to consolidate multiple spaces
+        normalized_column_map_from_constants = {
+            re.sub(r'\s+', ' ', key): value
+            for key, value in normalized_column_map_from_constants.items()
+        }
 
-        for i, header_text in enumerate(extracted_headers):
-            cleaned_header = header_text.lower().strip()
-            # Try exact match first (case-insensitive)
-            if cleaned_header in normalized_column_map:
-                mapped_headers[header_text] = normalized_column_map[cleaned_header]
+
+        for i, original_header_text_from_page in enumerate(extracted_headers):
+            page_header_for_matching: str
+            if not original_header_text_from_page: 
+                page_header_for_matching = f"unknown_header_{i}" # Use this as the key for matching
             else:
-                # Try partial match (e.g., "Filing Date Time" should map to "filing_date")
-                best_match = None
-                for map_key, field_name in normalized_column_map.items():
-                    if map_key in cleaned_header: # "filing date" in "filing date time"
-                        best_match = field_name
-                        break # Take first partial match
-                if best_match:
-                    mapped_headers[header_text] = best_match
-                    logger.debug(f"Partially mapped header '{header_text}' to '{best_match}'")
+                # Step 1: Convert to lowercase
+                temp_header = original_header_text_from_page.lower()
+                # Step 2: Replace non-breaking spaces with regular spaces
+                temp_header = temp_header.replace('\xa0', ' ')
+                # Step 3: Consolidate all multiple whitespace characters (including newlines, tabs, multiple spaces) into a single space
+                temp_header = re.sub(r'\s+', ' ', temp_header)
+                # Step 4: Strip leading/trailing whitespace that might have been left or introduced
+                page_header_for_matching = temp_header.strip()
+
+            assigned_field_name = None
+
+            # Attempt 1: Exact match using the fully cleaned page_header_for_matching
+            if page_header_for_matching in normalized_column_map_from_constants:
+                assigned_field_name = normalized_column_map_from_constants[page_header_for_matching]
+                logger.debug(f"Mapped header '{original_header_text_from_page}' (cleaned to: '{page_header_for_matching}') to '{assigned_field_name}' by exact match.")
+            
+            # Attempt 2: Partial match (if a cleaned constant key is a substring of page_header_for_matching)
+            if not assigned_field_name:
+                # Sort constant keys by length (descending) to match longer, more specific keys first
+                # This helps avoid a shorter key like "date" matching before "trade date" if "trade date" is also a key.
+                sorted_constant_keys = sorted(normalized_column_map_from_constants.keys(), key=len, reverse=True)
+                
+                for constant_key in sorted_constant_keys:
+                    # constant_key is already fully cleaned
+                    if constant_key in page_header_for_matching:
+                        assigned_field_name = normalized_column_map_from_constants[constant_key]
+                        logger.debug(
+                            f"Partially mapped header '{original_header_text_from_page}' (cleaned to: '{page_header_for_matching}') "
+                            f"to '{assigned_field_name}' because constant key '{constant_key}' was a substring."
+                        )
+                        break 
+            
+            # Attempt 3: Fallback to generic name if no match
+            if not assigned_field_name:
+                generic_name_base = data_cleaner.clean_text(original_header_text_from_page) # Use your existing utility
+                if generic_name_base: # clean_text replaces \xa0 and consolidates spaces already
+                    generic_name = f"column_{i}_{generic_name_base.replace(' ', '_').lower()}"
                 else:
-                    # If no map, use cleaned header or a generic name
-                    generic_name = f"column_{i}_{data_cleaner.clean_text(header_text).replace(' ', '_').lower()}" if data_cleaner.clean_text(header_text) else f"column_{i}"
-                    mapped_headers[header_text] = generic_name
-                    logger.warning(f"Unmapped header: '{header_text}'. Using generic name: '{generic_name}'")
+                    generic_name = f"column_{i}_emptyheader"
+                
+                assigned_field_name = generic_name
+                logger.warning(
+                    f"Unmapped header: '{original_header_text_from_page}' (cleaned to: '{page_header_for_matching}'). "
+                    f"Using generic name: '{assigned_field_name}'"
+                )
+            
+            mapped_headers[original_header_text_from_page] = assigned_field_name
         
         logger.debug(f"Final header mapping: {mapped_headers}")
         return mapped_headers

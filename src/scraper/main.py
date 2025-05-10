@@ -1,4 +1,6 @@
 # src/scraper/main.py
+from pydantic import ValidationError
+import threading
 import logging
 import time
 import signal
@@ -16,6 +18,8 @@ from .exceptions import ScraperException, NetworkError, ParsingError, DatabaseEr
 from .utils.hash import generate_content_hash
 from .storage.models import SourceMetadata # For source metadata handling
 from .utils.concurrency import shutdown_executor
+
+from .parsers import data_cleaner
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +232,28 @@ class OpenInsiderScraper:
         """
         logger.info(f"Starting full scrape... Target sources: {specific_sources or 'all enabled'}")
         start_time = time.monotonic()
+        
+        # ---- START TEMPORARY DEBUGGING CODE ----
+        if specific_sources == ['latest_filings'] or (specific_sources is None and 'latest_filings' in self.scraper_config.get("sources", {})):
+            logger.warning("TEMPORARY DEBUG: Forcing deletion of 'latest_filings' metadata before scrape.")
+            try:
+                conn = self.db._get_connection() # Get a connection
+                with conn:
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM source_metadata WHERE source_name = ?", ('latest_filings',))
+                    # Verify deletion immediately
+                    cursor.execute("SELECT COUNT(*) FROM source_metadata WHERE source_name = ?", ('latest_filings',))
+                    count_after_delete = cursor.fetchone()[0]
+                    if count_after_delete == 0:
+                        logger.info("TEMPORARY DEBUG: Successfully deleted 'latest_filings' metadata from DB.")
+                    else:
+                        logger.error("TEMPORARY DEBUG: FAILED to delete 'latest_filings' metadata from DB. Row still exists.")
+                self.db.close_connection() # Close this specific connection if it's not thread-managed robustly for this one-off
+                                           # Or rely on thread_local to be separate.
+                                           # For safety, let's ensure it's a fresh context for the main scrape.
+            except Exception as db_debug_e:
+                logger.error(f"TEMPORARY DEBUG: Error during metadata deletion: {db_debug_e}")
+        # ---- END TEMPORARY DEBUGGING CODE ----
 
         sources_to_scrape: Dict[str, Dict[str, Any]] = {}
         configured_sources = self.scraper_config.get("sources", {})

@@ -26,6 +26,6 @@ class SourceMetadata(BaseModel):
     last_checked_at: Optional[datetime] = Field(None, description="Timestamp when source was last checked")
 
     class Config:
-        orm_mode = True # For compatibility if ever used with an ORM-like tool
+        #orm_mode = True # For compatibility if ever used with an ORM-like tool
         # Pydantic v2:
-        # from_attributes = True
+        from_attributes = True
