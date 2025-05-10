@@ -1,0 +1,24 @@
+# Production specific overrides
+logging:
+  level: "INFO"
+  console: false # Typically log to file in prod
+
+scraper:
+  request_delay: 2.0 # Be more polite in production
+  max_threads: 4 # Adjust based on server resources and site tolerance
+  max_rows_per_source: 2000 # Fetch more rows in production
+
+monitoring:
+  change_detection_interval: 300  # 5 minutes
+  full_refresh_interval: 10800 # 3 hours
+
+advanced:
+  selenium:
+    enabled: false # Avoid Selenium in prod if possible due to resource intensity
+    headless: true
+  caching:
+    enabled: true
+    expire_after: 7200 # 2 hours cache in prod
+
+database:
+  path: "data/processed/prod_openinsider.db"

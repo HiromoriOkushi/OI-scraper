@@ -1,0 +1,25 @@
+# Development specific overrides
+logging:
+  level: "DEBUG"
+  console: true
+  file: "logs/dev_scraper.log"
+
+scraper:
+  request_delay: 0.5 # Shorter delay for faster local testing
+  max_threads: 2
+  max_rows_per_source: 50 # Fetch fewer rows during dev
+
+monitoring:
+  change_detection_interval: 60  # 1 minute
+  full_refresh_interval: 3600   # 1 hour
+
+advanced:
+  selenium:
+    enabled: false # Keep false unless specifically testing Selenium
+    headless: false # See browser in dev if enabled
+  caching:
+    enabled: true
+    expire_after: 600 # Shorter cache for dev
+
+database:
+  path: "data/processed/dev_openinsider.db"

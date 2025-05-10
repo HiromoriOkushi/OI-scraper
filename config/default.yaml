@@ -1,0 +1,95 @@
+# OpenInsider Scraper Configuration
+
+# Scraper settings
+scraper:
+  base_url: "http://openinsider.com"
+  # User-Agents will be rotated from a list in constants.py
+  # user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+  default_user_agent: "OpenInsiderScraper/0.1 (Python Requests; +https://github.com/your-repo)" # Be a good citizen
+  request_timeout: 30 # seconds
+  max_retries: 5
+  retry_delay_base: 2 # seconds, for exponential backoff
+  request_delay: 1.0 # seconds, base delay between requests for politeness
+  max_threads: 5 # Max concurrent requests for scraping sections
+  max_rows_per_source: 100 # Max rows to fetch per source page, adjust for deeper scrapes. Use a large number like 10000 for more.
+  
+  # Sources to scrape
+  # Each source defines a page on OpenInsider. The scraper will attempt to find a table with id="insidertrades"
+  sources:
+    latest_filings:
+      url_path: "/latest-insider-trading"
+      enabled: true
+    latest_purchases:
+      url_path: "/latest-insider-purchases" # Example, might not be exactly this URL
+      enabled: true
+    latest_sales:
+      url_path: "/latest-insider-sales" # Example
+      enabled: true
+    clustered_buys:
+      url_path: "/latest-cluster-buys"
+      enabled: true
+    # ceo_cfo_purchases: # OpenInsider has specific CEO/CFO views
+    #   url_path: "/insider-purchases-ceo-cfo" # This might be different, check site
+    #   enabled: true
+    # ceo_cfo_sales:
+    #   url_path: "/insider-sales-ceo-cfo" # This might be different, check site
+    #   enabled: true
+    # top_officer_purchases:
+    #   url_path: "/latest-top-officer-purchases"
+    #   enabled: true
+    # top_officer_sales:
+    #   url_path: "/latest-top-officer-sales"
+    #   enabled: true
+    # Removed some from prompt for brevity, user can add more from OpenInsider's navigation
+    # Add more sources here based on OpenInsider.com navigation menus
+
+# Database settings
+database:
+  type: "sqlite"
+  path: "data/processed/openinsider.db" # Relative to project root
+  # pool_size: 5 # Not directly applicable to sqlite3 module in Python standard library, connection is per-thread or reused
+  timeout: 30 # seconds, for database operations
+  optimize: true # Whether to apply PRAGMAs
+  batch_size: 100 # For bulk inserts
+  
+# Monitoring settings
+monitoring:
+  enabled: true
+  change_detection_interval: 600  # seconds (10 minutes) for checking changes
+  full_refresh_interval: 14400  # seconds (4 hours) for a full re-scrape of all enabled sources
+  
+# Logging settings
+logging:
+  level: "INFO" # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  format: "%(asctime)s [%(levelname)s] [%(name)s:%(funcName)s:%(lineno)d] - %(message)s"
+  file: "logs/scraper.log" # Relative to project root
+  max_size: 10485760  # 10MB
+  backup_count: 5
+  console: true
+
+# Advanced settings
+advanced:
+  selenium:
+    enabled: false # Set to true to enable Selenium fallback
+    driver_path: null # Path to ChromeDriver or GeckoDriver if not in PATH. e.g. /usr/local/bin/chromedriver
+    headless: true
+    max_instances: 2 # Max concurrent browser instances
+    page_load_timeout: 60 # seconds
+  memory:
+    gc_threshold_items: 10000 # Number of items processed before a potential gc.collect()
+  http_client:
+    # List of User-Agent strings to rotate. Add more for better disguise.
+    user_agents:
+      - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      - "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      - "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0" # Older Firefox ESR for variety
+      - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/115.0"
+    # If you have proxies
+    proxies: [] # List of proxies, e.g., ["http://user:pass@host:port", "https://user:pass@host:port"]
+    # proxy_rotation_policy: "random" # or "round-robin"
+  caching:
+    enabled: false # HTTP response caching
+    backend: "sqlite" # e.g., 'sqlite', 'memory', 'redis', 'mongodb' (requires requests-cache backends)
+    cache_name: "data/cache/http_cache"
+    expire_after: 3600 # Cache expiration in seconds (1 hour)

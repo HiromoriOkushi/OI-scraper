@@ -1,0 +1,1 @@
+# src/scraper/storage/__init__.py
