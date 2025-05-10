@@ -4,11 +4,12 @@ version = "0.1.0"
 description = "High-performance web scraper for OpenInsider.com"
 authors = ["Your Name <you@example.com>"]
 readme = "README.md"
-packages = [{include = "src"}]
+packages = [{include = "scraper", from = "src"} ]
 
 [tool.poetry.dependencies]
 python = "^3.10"
 requests = "^2.31.0"
+requests-cache = "^1.1.0"
 beautifulsoup4 = "^4.12.2"
 lxml = "^5.1.0"  # Parser for BeautifulSoup
 PyYAML = "^6.0.1"
@@ -19,18 +20,18 @@ selenium = "^4.15.0" # Optional, for Selenium fallback
 pydantic = "^2.5.3" # For data validation and models
 python-dateutil = "^2.8.2" # For flexible date parsing
 
-[tool.poetry.dev-dependencies]
+[tool.poetry.group.dev.dependencies] # Changed line
 pytest = "^7.4.3"
 pytest-cov = "^4.1.0"
 pytest-mock = "^3.12.0"
-black = "^23.12.0"
+black = {version = "^23.12.0", extras = ["d"]} # Optional: Black has extras, can be more specific
 flake8 = "^7.0.0"
 isort = "^5.13.2"
 mypy = "^1.8.0"
 pre-commit = "^3.6.0"
 
 [tool.poetry.scripts]
-openinsider-cli = "src.cli:main"
+openinsider-cli = "cli:main_cli"
 
 [build-system]
 requires = ["poetry-core"]

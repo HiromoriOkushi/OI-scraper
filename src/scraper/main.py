@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, List, Optional, Tuple
 
-from .config import Config
+from .types import Config
 from .extractors.request_manager import RequestManager
 from .parsers.trade_parser import InsiderTradeParser
 from .storage.database import InsiderTradeDatabase
