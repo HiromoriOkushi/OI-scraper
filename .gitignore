@@ -127,12 +127,28 @@ dmypy.json
 # Custom
 logs/*
 !logs/.gitkeep
-data/raw/*
-!data/raw/.gitkeep
-data/processed/*
-!data/processed/.gitkeep
-data/openinsider.db
-data/openinsider.db-journal
+
+# Data Files
+/data/raw/*
+!/data/raw/.gitkeep
+
+/data/processed/*
+!/data/processed/.gitkeep
+/data/processed/*.db
+/data/processed/*.sqlite
+/data/processed/*.db-journal # For SQLite journal files
+
+/data/cache/*
+!/data/cache/.gitkeep
+/data/cache/*.sqlite
+/data/cache/*.db
+/data/cache/*.db-journal
+
+*.db
+*.bin
+*.sqlite
+*.db-journal
+
 
 # macOS
 .DS_Store
